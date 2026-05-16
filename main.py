@@ -22,7 +22,6 @@ from kivy.uix.button import Button
 from kivy.uix.checkbox import CheckBox
 from kivy.uix.label import Label
 from kivy.uix.progressbar import ProgressBar
-from kivy.uix.scrollview import ScrollView
 from kivy.uix.textinput import TextInput
 from kivy.utils import platform
 
@@ -284,9 +283,83 @@ class LottoApp(App):
         self.cache = {}
         self.latest_round = None
 
-        self._set_buttons_enabled(False)
-        threading.Thread(target=self._load_data, daemon=True).start()
+        # 시작 시 자동 네트워크 호출 제거 (크래시 원인 추적용)
+        # 캐시만 로드해서 즉시 사용 가능 상태로 만들기
+        Clock.schedule_once(self._initial_load_safe, 0.5)
+
+        # 네트워크 업데이트 버튼 추가
+        update_btn = Button(text="네트워크에서 신규 회차 받기", size_hint_y=None, height=44, font_size="12sp")
+        update_btn.bind(on_release=lambda inst: self._on_network_update())
+        root.add_widget(update_btn)
+        self.update_btn = update_btn
+
         return root
+
+    def _initial_load_safe(self, dt):
+        """앱 시작 시 캐시만 로드. 네트워크 호출 없음 → 크래시 방지."""
+        try:
+            ensure_starter_cache()
+            cache = load_cache()
+            if not cache:
+                self.info_lbl.text = "캐시 없음 — '네트워크에서 신규 회차 받기' 눌러 받으세요"
+                self._set_buttons_enabled(True)
+                return
+            self.cache = cache
+            self.latest_round = max(cache.keys())
+            info = cache[self.latest_round]
+            nums = " ".join(f"{n:2d}" for n in info["numbers"])
+            self.info_lbl.text = f"최근 {info['round']}회 ({info['date']})\n당첨: {nums}  + 보너스 {info['bonus']}"
+            self.status_lbl.text = f"준비 완료 · 총 {len(cache)}회차 (캐시 only)"
+            self.progress.value = 100
+            self._set_buttons_enabled(True)
+        except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            self.info_lbl.text = "초기화 오류"
+            self.output.text = f"=== 초기화 예외 ===\n{tb}"
+
+    def _on_network_update(self):
+        """수동으로 신규 회차 다운로드 시도."""
+        self._set_buttons_enabled(False)
+        self.status_lbl.text = "네트워크 업데이트 시도 중..."
+        threading.Thread(target=self._do_network_update, daemon=True).start()
+
+    def _do_network_update(self):
+        try:
+            cache = self.cache or load_cache()
+            cache_max = max(cache.keys()) if cache else 0
+            hint = cache_max + 1 if cache else 1200
+            latest = find_latest_round(start_hint=hint)
+            if latest == 0:
+                Clock.schedule_once(lambda dt: self._update_done("네트워크 응답 없음 — 캐시 유지"))
+                return
+
+            def on_progress(done, total, pass_idx=1):
+                pct = done / total * 100
+                Clock.schedule_once(lambda dt: self._set_progress(pct, f"다운로드 {done}/{total}"))
+
+            cache = fetch_missing(cache, latest, progress_cb=on_progress)
+            self.cache = cache
+            self.latest_round = max(cache.keys())
+            info = cache[self.latest_round]
+            nums = " ".join(f"{n:2d}" for n in info["numbers"])
+            Clock.schedule_once(lambda dt: self._update_done(
+                f"업데이트 완료 · 총 {len(cache)}회차",
+                f"최근 {info['round']}회 ({info['date']})\n당첨: {nums}  + 보너스 {info['bonus']}",
+            ))
+        except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            Clock.schedule_once(lambda dt: self._update_done(f"오류: {e}", output=tb))
+
+    def _update_done(self, status, info_text=None, output=None):
+        self.status_lbl.text = status
+        if info_text:
+            self.info_lbl.text = info_text
+        if output:
+            self.output.text = output
+        self.progress.value = 100
+        self._set_buttons_enabled(True)
 
     # ---------- 비동기 데이터 로딩 ----------
     def _load_data(self):
@@ -490,4 +563,15 @@ class LottoApp(App):
 
 
 if __name__ == "__main__":
-    LottoApp().run()
+    try:
+        LottoApp().run()
+    except Exception as e:
+        # 시작 중 크래시 로그를 쓰기 가능 위치에 남김
+        import traceback
+        try:
+            log_path = os.path.join(_writable_dir(), "crash.log")
+            with open(log_path, "w", encoding="utf-8") as f:
+                f.write(traceback.format_exc())
+        except Exception:
+            pass
+        raise
