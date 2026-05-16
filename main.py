@@ -59,7 +59,12 @@ STARTER_CACHE = os.path.join(_bundle_dir(), "lotto_cache.json")
 def ensure_starter_cache():
     """쓰기 가능 위치에 캐시가 없으면 번들된 초기 캐시 복사."""
     if not os.path.exists(CACHE_PATH) and os.path.exists(STARTER_CACHE):
-        shutil.copy2(STARTER_CACHE, CACHE_PATH)
+        try:
+            shutil.copy(STARTER_CACHE, CACHE_PATH)  # copy2 대신 copy 사용 (xattr 복사 안 함)
+        except Exception:
+            # shutil.copy도 실패하면 직접 읽어서 쓰기
+            with open(STARTER_CACHE, "rb") as src, open(CACHE_PATH, "wb") as dst:
+                dst.write(src.read())
 
 
 # ---------- API ----------
