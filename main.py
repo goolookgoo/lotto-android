@@ -17,6 +17,7 @@ from collections import Counter
 
 from kivy.app import App
 from kivy.clock import Clock
+from kivy.core.text import LabelBase
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
 from kivy.uix.checkbox import CheckBox
@@ -28,12 +29,20 @@ from kivy.utils import platform
 API_URL = "https://www.dhlottery.co.kr/common.do?method=getLottoNumber&drwNo={}"
 THRESHOLD = 5
 
+# ── 한글 폰트 등록 ──────────────────────────────────────────
+_FONT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "NanumGothic.ttf")
+if os.path.exists(_FONT_PATH):
+    LabelBase.register(name="NanumGothic", fn_regular=_FONT_PATH)
+    KR_FONT = "NanumGothic"
+else:
+    KR_FONT = "Roboto"        # 폰트 없으면 기본값 (깨질 수 있음)
+
 
 # ---------- 경로 ----------
 
 def _bundle_dir():
     """앱 패키지(=APK)에 함께 들어 있는 파일 경로 (읽기 전용)."""
-    if hasattr(sys, "_MEIPASS"):  # 안 쓰지만 안전망
+    if hasattr(sys, "_MEIPASS"):
         return sys._MEIPASS
     return os.path.dirname(os.path.abspath(__file__))
 
@@ -60,9 +69,8 @@ def ensure_starter_cache():
     """쓰기 가능 위치에 캐시가 없으면 번들된 초기 캐시 복사."""
     if not os.path.exists(CACHE_PATH) and os.path.exists(STARTER_CACHE):
         try:
-            shutil.copy(STARTER_CACHE, CACHE_PATH)  # copy2 대신 copy 사용 (xattr 복사 안 함)
+            shutil.copy(STARTER_CACHE, CACHE_PATH)
         except Exception:
-            # shutil.copy도 실패하면 직접 읽어서 쓰기
             with open(STARTER_CACHE, "rb") as src, open(CACHE_PATH, "wb") as dst:
                 dst.write(src.read())
 
@@ -201,132 +209,183 @@ def generate_sets(all_draws, latest_round, num_sets, no_pattern=True):
     return results, latest_numbers
 
 
+# ---------- UI 헬퍼 ----------
+
+def make_label(text, font_size="16sp", bold=False, height=None, halign="left", color=None):
+    kw = dict(
+        text=text,
+        font_name=KR_FONT,
+        font_size=font_size,
+        bold=bold,
+        halign=halign,
+        valign="middle",
+    )
+    if height is not None:
+        kw["size_hint_y"] = None
+        kw["height"] = height
+    if color:
+        kw["color"] = color
+    lbl = Label(**kw)
+    lbl.bind(size=lambda inst, val: setattr(inst, "text_size", val))
+    return lbl
+
+
+def make_button(text, font_size="18sp", width=None, **kwargs):
+    kw = dict(font_name=KR_FONT, font_size=font_size, **kwargs)
+    if width is not None:
+        kw["size_hint_x"] = None
+        kw["width"] = width
+    return Button(text=text, **kw)
+
+
+def make_input(hint="", font_size="16sp", **kwargs):
+    return TextInput(
+        hint_text=hint,
+        font_name=KR_FONT,
+        font_size=font_size,
+        multiline=False,
+        **kwargs,
+    )
+
+
 # ---------- UI ----------
 
 class LottoApp(App):
     title = "로또 번호 생성기"
 
     def build(self):
-        root = BoxLayout(orientation="vertical", padding=8, spacing=6)
+        root = BoxLayout(orientation="vertical", padding=10, spacing=8)
 
-        # 상단 정보
-        self.info_lbl = Label(
-            text="데이터 불러오는 중...",
-            size_hint_y=None, height=44,
-            halign="left", valign="middle",
-            font_size="14sp", bold=True,
+        # ── 상단 정보 ──────────────────────────────────────
+        self.info_lbl = make_label(
+            "데이터 불러오는 중...",
+            font_size="18sp", bold=True, height=56,
         )
-        self.info_lbl.bind(size=lambda inst, val: setattr(inst, "text_size", val))
         root.add_widget(self.info_lbl)
 
-        self.status_lbl = Label(
-            text="",
-            size_hint_y=None, height=24,
-            halign="left", valign="middle",
+        self.status_lbl = make_label(
+            "", font_size="14sp", height=30,
             color=(0.4, 0.4, 0.4, 1),
-            font_size="11sp",
         )
-        self.status_lbl.bind(size=lambda inst, val: setattr(inst, "text_size", val))
         root.add_widget(self.status_lbl)
 
-        self.progress = ProgressBar(max=100, value=0, size_hint_y=None, height=18)
+        self.progress = ProgressBar(max=100, value=0, size_hint_y=None, height=14)
         root.add_widget(self.progress)
 
-        # 버튼 줄
-        btn_row = BoxLayout(orientation="horizontal", size_hint_y=None, height=48, spacing=4)
+        # ── 세트 생성 버튼 ─────────────────────────────────
+        btn_row = BoxLayout(
+            orientation="horizontal",
+            size_hint_y=None, height=72,
+            spacing=6,
+        )
         for n in (5, 10, 20, 30):
-            b = Button(text=f"{n}세트", font_size="13sp")
+            b = make_button(f"{n}세트", font_size="20sp")
             b.bind(on_release=lambda inst, c=n: self._on_generate(c))
             btn_row.add_widget(b)
         root.add_widget(btn_row)
 
-        # 옵션 줄
-        opt_row = BoxLayout(orientation="horizontal", size_hint_y=None, height=36, spacing=4)
-        self.no_pattern_cb = CheckBox(active=True, size_hint_x=None, width=36)
+        # ── 옵션 줄 ────────────────────────────────────────
+        opt_row = BoxLayout(
+            orientation="horizontal",
+            size_hint_y=None, height=56,
+            spacing=6,
+        )
+        self.no_pattern_cb = CheckBox(active=True, size_hint_x=None, width=44)
         opt_row.add_widget(self.no_pattern_cb)
-        opt_row.add_widget(Label(text="패턴 제거", halign="left", valign="middle", size_hint_x=None, width=80,
-                                  font_size="12sp"))
-        clear_btn = Button(text="결과 지우기", font_size="12sp")
+        opt_row.add_widget(make_label("패턴 제거", font_size="16sp", height=56))
+        clear_btn = make_button("결과 지우기", font_size="16sp")
         clear_btn.bind(on_release=lambda inst: self._clear())
         opt_row.add_widget(clear_btn)
         root.add_widget(opt_row)
 
-        # 당첨 이력 확인 줄
-        check_row = BoxLayout(orientation="horizontal", size_hint_y=None, height=44, spacing=4)
-        self.check_input = TextInput(
-            multiline=False, hint_text="6개 번호 (예: 1 7 13 22 30 41)",
-            font_size="13sp",
+        # ── 당첨 이력 확인 ─────────────────────────────────
+        check_row = BoxLayout(
+            orientation="horizontal",
+            size_hint_y=None, height=56,
+            spacing=6,
+        )
+        self.check_input = make_input(
+            hint="6개 번호 입력 (예: 1 7 13 22 30 41)",
+            font_size="15sp",
         )
         check_row.add_widget(self.check_input)
-        check_btn = Button(text="이력 확인", size_hint_x=None, width=96, font_size="12sp")
+        check_btn = make_button("이력 확인", font_size="16sp", width=110)
         check_btn.bind(on_release=lambda inst: self._on_check())
         check_row.add_widget(check_btn)
         root.add_widget(check_row)
 
-        # 신규 회차 수동 입력 줄
-        add_row = BoxLayout(orientation="horizontal", size_hint_y=None, height=44, spacing=4)
-        self.add_input = TextInput(
-            multiline=False, hint_text="신규 회차 추가 (예: 1224 5 12 18 24 33 41 / 7)",
-            font_size="12sp",
+        # ── 수동 회차 추가 ─────────────────────────────────
+        add_row = BoxLayout(
+            orientation="horizontal",
+            size_hint_y=None, height=56,
+            spacing=6,
+        )
+        self.add_input = make_input(
+            hint="회차 추가 (예: 1224 5 12 18 24 33 41 / 7)",
+            font_size="14sp",
         )
         add_row.add_widget(self.add_input)
-        add_btn = Button(text="회차 추가", size_hint_x=None, width=96, font_size="12sp")
+        add_btn = make_button("추가", font_size="16sp", width=80)
         add_btn.bind(on_release=lambda inst: self._on_add_round())
         add_row.add_widget(add_btn)
         root.add_widget(add_row)
 
-        # 출력 영역 (TextInput multiline=True 기본 → 자체 스크롤 가능)
+        # ── 결과 출력 영역 ─────────────────────────────────
         self.output = TextInput(
             text="",
             readonly=True,
-            font_size="12sp",
+            font_name=KR_FONT,
+            font_size="16sp",
             background_color=(0.97, 0.97, 0.97, 1),
         )
         root.add_widget(self.output)
 
-        # 상태
-        self.cache = {}
-        self.latest_round = None
-
-        # 시작 시 자동 네트워크 호출 제거 (크래시 원인 추적용)
-        # 캐시만 로드해서 즉시 사용 가능 상태로 만들기
-        Clock.schedule_once(self._initial_load_safe, 0.5)
-
-        # 네트워크 업데이트 버튼 추가
-        update_btn = Button(text="네트워크에서 신규 회차 받기", size_hint_y=None, height=44, font_size="12sp")
+        # ── 네트워크 업데이트 버튼 ─────────────────────────
+        update_btn = make_button(
+            "서버에서 최신 회차 받기",
+            font_size="16sp",
+        )
+        update_btn.size_hint_y = None
+        update_btn.height = 60
         update_btn.bind(on_release=lambda inst: self._on_network_update())
         root.add_widget(update_btn)
         self.update_btn = update_btn
 
+        # ── 상태 초기화 ────────────────────────────────────
+        self.cache = {}
+        self.latest_round = None
+        Clock.schedule_once(self._initial_load_safe, 0.5)
+
         return root
 
     def _initial_load_safe(self, dt):
-        """앱 시작 시 캐시만 로드. 네트워크 호출 없음 → 크래시 방지."""
+        """앱 시작 시 캐시만 로드. 네트워크 호출 없음."""
         try:
             ensure_starter_cache()
             cache = load_cache()
             if not cache:
-                self.info_lbl.text = "캐시 없음 — '네트워크에서 신규 회차 받기' 눌러 받으세요"
+                self.info_lbl.text = "캐시 없음 — '서버에서 최신 회차 받기' 눌러주세요"
                 self._set_buttons_enabled(True)
                 return
             self.cache = cache
             self.latest_round = max(cache.keys())
             info = cache[self.latest_round]
             nums = " ".join(f"{n:2d}" for n in info["numbers"])
-            self.info_lbl.text = f"최근 {info['round']}회 ({info['date']})\n당첨: {nums}  + 보너스 {info['bonus']}"
-            self.status_lbl.text = f"준비 완료 · 총 {len(cache)}회차 (캐시 only)"
+            self.info_lbl.text = (
+                f"최신: {nums}  + 보너스 {info['bonus']}\n"
+                f"제 {info['round']}회차 ({info['date']})"
+            )
+            self.status_lbl.text = f"준비 완료  ·  총 {len(cache)}회차 로드됨 (캐시)"
             self.progress.value = 100
             self._set_buttons_enabled(True)
-        except Exception as e:
+        except Exception:
             import traceback
-            tb = traceback.format_exc()
             self.info_lbl.text = "초기화 오류"
-            self.output.text = f"=== 초기화 예외 ===\n{tb}"
+            self.output.text = traceback.format_exc()
 
     def _on_network_update(self):
-        """수동으로 신규 회차 다운로드 시도."""
         self._set_buttons_enabled(False)
-        self.status_lbl.text = "네트워크 업데이트 시도 중..."
+        self.status_lbl.text = "서버 업데이트 중..."
         threading.Thread(target=self._do_network_update, daemon=True).start()
 
     def _do_network_update(self):
@@ -336,7 +395,7 @@ class LottoApp(App):
             hint = cache_max + 1 if cache else 1200
             latest = find_latest_round(start_hint=hint)
             if latest == 0:
-                Clock.schedule_once(lambda dt: self._update_done("네트워크 응답 없음 — 캐시 유지"))
+                Clock.schedule_once(lambda dt: self._update_done("서버 응답 없음 — 캐시 사용 중"))
                 return
 
             def on_progress(done, total, pass_idx=1):
@@ -349,8 +408,8 @@ class LottoApp(App):
             info = cache[self.latest_round]
             nums = " ".join(f"{n:2d}" for n in info["numbers"])
             Clock.schedule_once(lambda dt: self._update_done(
-                f"업데이트 완료 · 총 {len(cache)}회차",
-                f"최근 {info['round']}회 ({info['date']})\n당첨: {nums}  + 보너스 {info['bonus']}",
+                f"업데이트 완료  ·  총 {len(cache)}회차",
+                f"최신: {nums}  + 보너스 {info['bonus']}\n제 {info['round']}회차 ({info['date']})",
             ))
         except Exception as e:
             import traceback
@@ -366,66 +425,6 @@ class LottoApp(App):
         self.progress.value = 100
         self._set_buttons_enabled(True)
 
-    # ---------- 비동기 데이터 로딩 ----------
-    def _load_data(self):
-        try:
-            ensure_starter_cache()
-            Clock.schedule_once(lambda dt: self._set_status("캐시 확인 중..."))
-            cache = load_cache()
-            Clock.schedule_once(lambda dt: self._set_status(
-                f"캐시 {len(cache)}회차 로드됨. 최신 회차 확인 중..."
-            ))
-
-            cache_max = max(cache.keys()) if cache else 0
-            hint = cache_max + 1 if cache else 1200
-            latest = find_latest_round(start_hint=hint)
-
-            api_ok = latest > 0
-            if not api_ok:
-                if cache_max > 0:
-                    latest = cache_max
-                else:
-                    Clock.schedule_once(lambda dt: self._set_status(
-                        "오류: 캐시도 없고 네트워크도 안 됨"
-                    ))
-                    return
-            else:
-                Clock.schedule_once(lambda dt: self._set_status(
-                    f"최신 회차: {latest}회 · 누락 회차 다운로드 중..."
-                ))
-
-                def on_progress(done, total, pass_idx=1):
-                    pct = done / total * 100
-                    Clock.schedule_once(lambda dt: self._set_progress(pct, f"다운로드 (pass {pass_idx}) {done}/{total}"))
-
-                cache = fetch_missing(cache, latest, progress_cb=on_progress)
-
-            if latest not in cache and cache:
-                latest = max(cache.keys())
-
-            self.cache = cache
-            self.latest_round = latest
-            info = cache[latest]
-
-            nums = " ".join(f"{n:2d}" for n in info["numbers"])
-            suffix = "" if api_ok else "  (오프라인)"
-            Clock.schedule_once(lambda dt: self._on_ready(
-                f"최근 {info['round']}회 ({info['date']})\n당첨: {nums}  + 보너스 {info['bonus']}",
-                f"준비 완료 · 총 {len(cache)}회차{suffix}",
-            ))
-        except Exception as e:
-            err = str(e)
-            Clock.schedule_once(lambda dt: self._set_status(f"오류: {err}"))
-
-    def _on_ready(self, info_text, status_text):
-        self.info_lbl.text = info_text
-        self.status_lbl.text = status_text
-        self.progress.value = 100
-        self._set_buttons_enabled(True)
-
-    def _set_status(self, msg):
-        self.status_lbl.text = msg
-
     def _set_progress(self, pct, msg):
         self.progress.value = pct
         self.status_lbl.text = msg
@@ -438,7 +437,6 @@ class LottoApp(App):
                 walk(c)
         walk(self.root)
 
-    # ---------- 액션 ----------
     def _on_generate(self, count):
         if not self.cache or self.latest_round is None:
             return
@@ -451,15 +449,14 @@ class LottoApp(App):
             self.cache, self.latest_round, count,
             no_pattern=self.no_pattern_cb.active,
         )
-        lines = [f"=== {len(sets)}세트 (역대 3등 이상 미당첨 · 최근회차와 1개 중복) ==="]
+        lines = [f"=== {len(sets)}세트 (3등이상 미당첨 · 최근회차 1개 중복) ==="]
         for i, s in enumerate(sets, 1):
             shared = next(n for n in s if n in latest_nums)
-            nums = " ".join(f"{n:2d}" for n in s)
-            lines.append(f"{i:2d}. {nums}  (공유: {shared})")
+            nums = "  ".join(f"{n:2d}" for n in s)
+            lines.append(f"{i:2d}.  {nums}   (공유:{shared})")
         if len(sets) < count:
-            lines.append(f"\n주의: 조건을 만족하는 세트가 {len(sets)}개만 생성됨")
-        text = "\n".join(lines)
-        Clock.schedule_once(lambda dt: self._on_generate_done(text))
+            lines.append(f"\n조건 만족 세트: {len(sets)}개")
+        Clock.schedule_once(lambda dt: self._on_generate_done("\n".join(lines)))
 
     def _on_generate_done(self, text):
         self.output.text = text
@@ -473,10 +470,10 @@ class LottoApp(App):
             tokens = [t for t in raw.replace(",", " ").replace("/", " ").split() if t]
             nums = [int(t) for t in tokens]
         except ValueError:
-            self.output.text = "입력 오류: 숫자만 6개 (예: 1 7 13 22 30 41)"
+            self.output.text = "입력 오류: 숫자 6개 (예: 1 7 13 22 30 41)"
             return
         if len(nums) != 6 or len(set(nums)) != 6 or not all(1 <= n <= 45 for n in nums):
-            self.output.text = "입력 오류: 1~45 사이 서로 다른 숫자 6개"
+            self.output.text = "입력 오류: 1~45 서로 다른 숫자 6개"
             return
 
         ns = set(nums)
@@ -499,69 +496,63 @@ class LottoApp(App):
         nums_str = " ".join(f"{n:2d}" for n in sorted(nums))
         lines = [
             f"=== {nums_str} 역대 이력 ===",
-            f"(검사 1~{max(self.cache)}회, 총 {len(self.cache)}회)",
+            f"(1~{max(self.cache)}회, 총 {len(self.cache)}회차)",
             "",
         ]
-        labels = {1: "1등 (6개)", 2: "2등 (5+보너스)", 3: "3등 (5개)", 4: "4등 (4개)", 5: "5등 (3개)"}
+        labels = {1: "1등(6개)", 2: "2등(5+보너스)", 3: "3등(5개)", 4: "4등(4개)", 5: "5등(3개)"}
         for r in (1, 2, 3, 4, 5):
-            lines.append(f"  {labels[r]:>14} : {len(ranks[r])}회")
+            lines.append(f"  {labels[r]:>12} : {len(ranks[r])}회")
         lines.append("")
-
         for r in (1, 2, 3):
             if not ranks[r]:
                 continue
             lines.append(f"[{labels[r]} 당첨 회차]")
             for d in sorted(ranks[r], key=lambda x: x["round"]):
                 wn = " ".join(f"{n:2d}" for n in d["numbers"])
-                lines.append(f"  {d['round']}회 ({d['date']}) 당첨: {wn} +보너스 {d['bonus']}")
+                lines.append(f"  {d['round']}회 ({d['date']})  {wn} +{d['bonus']}")
             lines.append("")
 
         self.output.text = "\n".join(lines)
 
     def _on_add_round(self):
-        """수동으로 새 회차 추가. 형식: '1224 5 12 18 24 33 41 / 7' 또는 '1224 5 12 18 24 33 41 7'."""
         raw = self.add_input.text.strip()
         try:
             tokens = [t for t in raw.replace(",", " ").replace("/", " ").split() if t]
             vals = [int(t) for t in tokens]
         except ValueError:
-            self.output.text = "입력 오류: 숫자만. 예: 1224 5 12 18 24 33 41 / 7"
+            self.output.text = "입력 오류: 예) 1224 5 12 18 24 33 41 / 7"
             return
         if len(vals) != 8:
-            self.output.text = "입력 오류: 회차 + 번호 6개 + 보너스 1개 = 8개 숫자"
+            self.output.text = "입력 오류: 회차+번호6개+보너스 = 8개"
             return
-        round_no = vals[0]
-        nums = vals[1:7]
-        bonus = vals[7]
+        round_no, nums, bonus = vals[0], vals[1:7], vals[7]
         if not (1 <= round_no <= 9999):
-            self.output.text = "입력 오류: 회차 범위"
+            self.output.text = "입력 오류: 회차 범위 초과"
             return
         if len(set(nums)) != 6 or not all(1 <= n <= 45 for n in nums):
             self.output.text = "입력 오류: 1~45 서로 다른 6개"
             return
         if not (1 <= bonus <= 45) or bonus in nums:
-            self.output.text = "입력 오류: 보너스 범위 또는 중복"
+            self.output.text = "입력 오류: 보너스 범위/중복"
             return
-        # 날짜는 1회차(2002-12-07) 기준 자동 계산
         from datetime import date, timedelta
         d = (date(2002, 12, 7) + timedelta(days=(round_no - 1) * 7)).isoformat()
-
         self.cache[round_no] = {
-            "round": round_no,
-            "date": d,
-            "numbers": sorted(nums),
-            "bonus": bonus,
+            "round": round_no, "date": d,
+            "numbers": sorted(nums), "bonus": bonus,
         }
         if round_no > (self.latest_round or 0):
             self.latest_round = round_no
             info = self.cache[round_no]
             nstr = " ".join(f"{n:2d}" for n in info["numbers"])
-            self.info_lbl.text = f"최근 {info['round']}회 ({info['date']})\n당첨: {nstr}  + 보너스 {info['bonus']}"
-
+            self.info_lbl.text = (
+                f"최신: {nstr}  + 보너스 {info['bonus']}\n"
+                f"제 {info['round']}회차 ({info['date']})"
+            )
         save_cache(self.cache)
         self.add_input.text = ""
-        self.output.text = f"{round_no}회 추가됨. 총 {len(self.cache)}회차 캐시."
-        self.status_lbl.text = f"준비 완료 · 총 {len(self.cache)}회차"
+        self.output.text = f"{round_no}회 추가됨. 총 {len(self.cache)}회차."
+        self.status_lbl.text = f"준비 완료  ·  총 {len(self.cache)}회차"
 
     def _clear(self):
         self.output.text = ""
@@ -570,8 +561,7 @@ class LottoApp(App):
 if __name__ == "__main__":
     try:
         LottoApp().run()
-    except Exception as e:
-        # 시작 중 크래시 로그를 쓰기 가능 위치에 남김
+    except Exception:
         import traceback
         try:
             log_path = os.path.join(_writable_dir(), "crash.log")

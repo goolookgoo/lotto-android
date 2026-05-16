@@ -4,7 +4,7 @@ package.name = lottopicker
 package.domain = org.burlr.lotto
 
 source.dir = .
-source.include_exts = py,json,png,jpg,kv,atlas
+source.include_exts = py,json,png,jpg,kv,atlas,ttf
 
 version = 1.0.0
 
