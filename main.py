@@ -26,7 +26,10 @@ from kivy.uix.progressbar import ProgressBar
 from kivy.uix.textinput import TextInput
 from kivy.utils import platform
 
-API_URL = "https://www.dhlottery.co.kr/common.do?method=getLottoNumber&drwNo={}"
+# 데이터 소스 (동행복권이 IP 차단할 수 있어 미러를 폴백으로 둠)
+DHLOTTERY_URL = "https://www.dhlottery.co.kr/common.do?method=getLottoNumber&drwNo={}"
+SMOK_URL = "https://smok95.github.io/lotto/results/{}.json"       # 개별 회차
+SMOK_LATEST_URL = "https://smok95.github.io/lotto/results/latest.json"  # 최신 회차
 THRESHOLD = 5
 
 # ── 한글 폰트 등록 ──────────────────────────────────────────
@@ -77,29 +80,63 @@ def ensure_starter_cache():
 
 # ---------- API ----------
 
-def fetch_draw(round_no, timeout=10, retries=3):
-    for _ in range(retries):
-        try:
-            req = urllib.request.Request(
-                API_URL.format(round_no),
-                headers={"User-Agent": "Mozilla/5.0"},
-            )
-            with urllib.request.urlopen(req, timeout=timeout) as r:
-                data = json.loads(r.read().decode("utf-8"))
-            if data.get("returnValue") != "success":
-                return None
-            return {
-                "round": data["drwNo"],
-                "date": data["drwNoDate"],
-                "numbers": sorted(data[f"drwtNo{i}"] for i in range(1, 7)),
-                "bonus": data["bnusNo"],
-            }
-        except Exception:
-            continue
+def _http_json(url, timeout=10):
+    """URL에서 JSON을 받아 반환. HTML(차단/리다이렉트)이면 ValueError."""
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        body = r.read().decode("utf-8", "replace")
+    if not body.lstrip().startswith(("{", "[")):
+        raise ValueError("JSON이 아닌 응답 (차단/리다이렉트 추정)")
+    return json.loads(body)
+
+
+def _from_dhlottery(round_no, timeout=10):
+    data = _http_json(DHLOTTERY_URL.format(round_no), timeout)
+    if data.get("returnValue") != "success":
+        return None
+    return {
+        "round": data["drwNo"],
+        "date": data["drwNoDate"],
+        "numbers": sorted(data[f"drwtNo{i}"] for i in range(1, 7)),
+        "bonus": data["bnusNo"],
+    }
+
+
+def _from_smok(round_no, timeout=10):
+    data = _http_json(SMOK_URL.format(round_no), timeout)
+    if "numbers" not in data:
+        return None
+    return {
+        "round": data["draw_no"],
+        "date": str(data.get("date", ""))[:10],  # ISO 날짜에서 YYYY-MM-DD만
+        "numbers": sorted(data["numbers"]),
+        "bonus": data["bonus_no"],
+    }
+
+
+def fetch_draw(round_no, timeout=10, retries=2):
+    # 우선순위: 동행복권(공식) → smok95 미러. 앞 소스가 막혀도 뒤 소스로 자동 폴백.
+    for source in (_from_dhlottery, _from_smok):
+        for _ in range(retries):
+            try:
+                d = source(round_no, timeout)
+                if d is not None:
+                    return d
+                break  # 소스가 '이 회차 없음'을 명확히 응답 → 다음 소스로
+            except Exception:
+                continue
     return None
 
 
 def find_latest_round(start_hint=1200):
+    # 1차: smok95 latest.json으로 최신 회차를 한 번에 확인
+    try:
+        data = _http_json(SMOK_LATEST_URL)
+        if "draw_no" in data:
+            return int(data["draw_no"])
+    except Exception:
+        pass
+    # 2차 폴백: start_hint부터 위로 한 칸씩. 연속 2개 None이면 종료.
     n = max(start_hint, 1)
     consecutive_none = 0
     last_valid = 0
@@ -378,6 +415,8 @@ class LottoApp(App):
             self.status_lbl.text = f"준비 완료  ·  총 {len(cache)}회차 로드됨 (캐시)"
             self.progress.value = 100
             self._set_buttons_enabled(True)
+            # 캐시 표시 후 백그라운드로 최신 회차 자동 업데이트
+            self._on_network_update()
         except Exception:
             import traceback
             self.info_lbl.text = "초기화 오류"
