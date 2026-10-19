@@ -10,6 +10,7 @@ import json
 import os
 import random
 import shutil
+import ssl
 import sys
 import threading
 import urllib.request
@@ -80,10 +81,26 @@ def ensure_starter_cache():
 
 # ---------- API ----------
 
+def _make_ssl_context():
+    """Android 파이썬은 시스템 CA 번들이 없어 HTTPS 검증이 실패함.
+    certifi의 인증서를 쓰고, 없으면 검증 생략(공개 로또 데이터 전용)으로 폴백."""
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        return ctx
+
+
+_SSL_CTX = _make_ssl_context()
+
+
 def _http_json(url, timeout=10):
     """URL에서 JSON을 받아 반환. HTML(차단/리다이렉트)이면 ValueError."""
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CTX) as r:
         body = r.read().decode("utf-8", "replace")
     if not body.lstrip().startswith(("{", "[")):
         raise ValueError("JSON이 아닌 응답 (차단/리다이렉트 추정)")
